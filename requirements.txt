@@ -1,0 +1,9 @@
+python-dotenv
+requests
+pillow
+opencv-python
+imagehash
+scikit-image
+scikit-learn
+joblib
+numpy
