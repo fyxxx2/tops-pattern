@@ -1,9 +1,11 @@
-python-dotenv
 requests
+beautifulsoup4
+lxml
 pillow
-opencv-python
 imagehash
-scikit-image
+python-dotenv
+pandas
 scikit-learn
+opencv-python
+scikit-image
 joblib
-numpy
