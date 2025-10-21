@@ -1,15 +1,15 @@
 # collectors/collect_wconcept_api.py
-# W컨셉 카테고리 API 크롤러
-# - 남/여 상의 카테고리 순회
-# - 정렬 모드 순환(NEW/POPULAR/WCK) + 랜덤 페이지 샘플링
-# - 제목/본문/파일명 힌트 + 갤러리 이미지까지 보조 판별
-# - polka-dot 간단 비전 감지(옵션)
+# W컨셉 카테고리 API 크롤러 (+ 라벨별 검색 v2 보강, 여성전용/원피스 허용, 스킴보정)
+# - 카테고리 API: 남/여 상의 순회 (기존 로직 유지)
+# - 검색 v2: 라벨별 키워드/룰(여성 전용, 원피스 허용)로 복합 수집
+# - 제목/본문/파일명 힌트 + (옵션) polka-dot 비전 감지
+# - 이미지 URL 스킴 //... → https:// 보정
 #
 # 저장: data/raw/tops/<label>/wconcept_<itemCd>.jpg
 # manifest: data/raw/tops/_manifest_wconcept.csv
 
 import io, time, json, re, random
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 import requests
 from PIL import Image
 import imagehash
@@ -22,6 +22,10 @@ from crawler_utils import (
     polite_sleep, MIN_SIDE, PHASH_THRESHOLD, USE_PHASH,
     robots_allowed, HEADERS
 )
+
+# ─────────────────────────────────────────────────────────
+# 전역 세션 (커넥션 재사용로 속도 향상)
+SESSION = requests.Session()
 
 SITE = "wconcept"
 MANIFEST = SAVE_ROOT / "_manifest_wconcept.csv"
@@ -38,7 +42,6 @@ CATEGORIES = [
     ("women-shirts","M33439436", "001", "013"),
     ("women-tees",  "M33439436", "001", "003"),
     ("women-knit",  "M33439436", "001", "002"),
-    # ("women-dress","M33439436","001","005"),  # 상의 아님이라 제외
 ]
 
 def build_url(cat_id: str, sub1: str, sub2: Optional[str]=None) -> str:
@@ -92,8 +95,7 @@ PATTERN_SYNONYM = {
     "polka_dot": ["도트","땡땡이","물방울","polka dot","polka-dot","dot","dotted","polkadot"],
     "floral":    [
         "플로럴","플라워","꽃무늬","꽃","보태니컬","botanical","botanic","floral","flower","ditsy","bouquet",
-        "리버티","liberty","로즈","rose","장미","데이지","daisy","튤립","tulip",
-        "하와이안","hawaiian","트로피컬","tropical","가든","garden"
+        "리버티","liberty","로즈","rose","장미","데이지","daisy","튤립","tulip","하와이안","hawaiian","트로피컬","tropical","가든","garden"
     ],
 }
 
@@ -101,16 +103,40 @@ def normalize_product_url(webViewUrl: Optional[str]) -> Optional[str]:
     if not webViewUrl:
         return None
     u = webViewUrl.strip()
+    if u.startswith("//"):
+        return "https:" + u
     if u.startswith("/"):
         return "https://www.wconcept.co.kr" + u
     if u.startswith("http"):
         return u
     return "https://www.wconcept.co.kr/" + u.lstrip("/")
 
+def normalize_img_url(u: str) -> str:
+    if not u:
+        return u
+    u = u.strip()
+    if u.startswith("//"):
+        return "https:" + u
+    if u.startswith("/"):
+        # 일부 응답에 절대경로가 올 수도 있어 보편 보정
+        return "https://www.wconcept.co.kr" + u
+    return u
+
 def is_tops_by_category(cat2: str, cat3: str) -> bool:
     c2 = (cat2 or "").strip()
     c3 = (cat3 or "").strip()
     return (c2 in TOPS_CATEGORIES_2) or (c3 in TOPS_CATEGORIES_3)
+
+def gender_hint(name: str, c2: str, c3: str) -> Optional[str]:
+    blob = " ".join([(name or ""), (c2 or ""), (c3 or "")]).lower()
+    if any(k in blob for k in ["여성", "women", "woman", "ladies", "girl", "femme"]):
+        return "women"
+    if any(k in blob for k in ["남성", "남자", "men", "man", "mens", "men's", "man’s", "맨즈"]):
+        return "men"
+    return None
+
+def looks_mens(name: str, c2: str, c3: str) -> bool:
+    return gender_hint(name, c2, c3) == "men"
 
 # ─────────────────────────────────────────────────────────
 # 제목/본문 기반 라벨 감지 - 과검 방지 완화 + 화이트리스트
@@ -204,7 +230,7 @@ def fetch_detail_text(detail_url: str) -> str:
     try:
         if not detail_url:
             return ""
-        res = requests.get(detail_url, headers=HEADERS, timeout=20)
+        res = SESSION.get(detail_url, headers=HEADERS, timeout=20)
         if res.status_code != 200 or not res.text:
             return ""
         html = res.text
@@ -225,22 +251,13 @@ def fetch_detail_text(detail_url: str) -> str:
 
 def extract_gallery_images(detail_html: str) -> List[str]:
     urls = set()
-    # 1) JSON 속성 내 imageUrl
     for m in re.finditer(r'"imageUrl"\s*:\s*"([^"]+)"', detail_html):
-        urls.add(m.group(1))
-    # 2) 일반 <img src="...productimg...">
+        urls.add(normalize_img_url(m.group(1)))
     for m in re.finditer(r'<img[^>]+src=["\']([^"\']+productimg[^"\']+)["\']', detail_html, re.I):
-        urls.add(m.group(1))
-    # 3) imageUrlMobile
+        urls.add(normalize_img_url(m.group(1)))
     for m in re.finditer(r'"imageUrlMobile"\s*:\s*"([^"]+)"', detail_html):
-        urls.add(m.group(1))
-
-    out = []
-    for u in urls:
-        if any(s in u for s in ["/productimg/image/", "/productimg/new/"]):
-            out.append(u)
-        else:
-            out.append(u)
+        urls.add(normalize_img_url(m.group(1)))
+    out = list(urls)
     return out[:10]
 
 def detect_label_from_texts(title: str, detail: str) -> Optional[str]:
@@ -287,7 +304,6 @@ def detect_label_from_texts(title: str, detail: str) -> Optional[str]:
 
     return None
 
-# 파일명/URL 힌트
 def hint_label_from_media(item: dict) -> Optional[str]:
     cand = []
     for k in ("imageName", "imageUrlMobile", "webViewUrl"):
@@ -398,7 +414,7 @@ def looks_polkadot_blob(img_bgr: np.ndarray) -> bool:
 def fetch_page(base_url: str, page_no: int, page_size: int=60, sort_mode: str="WCK") -> Optional[dict]:
     try:
         payload = make_payload(page_no, page_size, sort_mode=sort_mode)
-        r = requests.post(base_url, headers=make_headers(), data=json.dumps(payload), timeout=20)
+        r = SESSION.post(base_url, headers=make_headers(), data=json.dumps(payload), timeout=20)
         if r.status_code != 200:
             print(f"[http {r.status_code}] {base_url}")
             return None
@@ -414,9 +430,14 @@ def iterate_category_random(base_url: str, max_pages:int=10, page_size:int=60, s
         print(f"[probe] 첫 페이지 로드 실패: {base_url} ({sort_mode})")
         return out
 
-    pl = first.get("data", {}).get("productList", {})
-    total_pages = int(pl.get("totalPages", 1))
-    content = pl.get("content", []) or []
+    try:
+        pl = first.get("data", {}).get("productList", {})
+        total_pages = int(pl.get("totalPages", 1))
+        content = pl.get("content", []) or []
+    except Exception:
+        print(f"[probe] 응답 파싱 실패: {base_url} ({sort_mode}), keys={list(first.keys())}")
+        return out
+
     out.extend(content)
     print(f"[api][{sort_mode}] p1/{total_pages} → {len(content)} items")
 
@@ -464,158 +485,374 @@ class SkipStats:
         print("[skip-stats]", self.c)
 
 # ─────────────────────────────────────────────────────────
-# 메인 수집
-def collect_api(per_label_target=20, labels_filter=None, max_pages=10):
+# (추가) 검색 v2 설정/도우미
+SEARCH_ENDPOINT_V2 = "https://api-display.wconcept.co.kr/display/api/v2/search/result/product"
+
+# 라벨별 복합 수집 설정: 키워드/여성전용/원피스허용
+SEARCH_CONFIG: Dict[str, Dict] = {
+    "floral": {
+        "keywords": ["floral", "floral print", "flower print", "플로럴", "플라워", "꽃무늬", "보태니컬", "liberty"],
+        "gender": "women",
+        "allow_dress": True,
+    },
+    "polka_dot": {
+        "keywords": ["polka dot", "polkadot", "dot print", "도트"],
+        "gender": "women",
+        "allow_dress": True,
+    },
+    # 필요하면 stripe/plaid도 검색으로 보강 가능
+    # "stripe": {"keywords": ["stripe","스트라이프"], "gender": "all", "allow_dress": False},
+    # "plaid": {"keywords": ["check","plaid","체크"], "gender": "all", "allow_dress": False},
+}
+
+SEARCH_LIST_PATHS = [
+    ["data", "list"], ["data", "products"], ["content"], ["products"], ["result"],
+    ["data", "productList", "content"],  # v2가 카테고리 구조처럼 내려오는 케이스
+]
+SEARCH_ID_KEYS   = ["itemCd", "productId", "goodsId", "goodsNo", "id"]
+SEARCH_NAME_KEYS = ["itemName", "productName", "goodsName", "name", "title"]
+SEARCH_IMG_KEYS  = ["imageUrlMobile", "imageUrl", "representImageUrl", "imgUrl", "thumbnailUrl"]
+SEARCH_CAT2_KEYS = ["categoryDepthName2", "category2"]
+SEARCH_CAT3_KEYS = ["categoryDepthName3", "category3"]
+
+DRESS_TERMS = {"원피스", "ONE PIECE", "ONE-PIECE", "ONEPIECE", "DRESS"}
+
+def pick_first(d, keys):
+    for k in keys:
+        v = d.get(k)
+        if v: return v
+    return None
+
+def get_by_path(d, path):
+    cur = d
+    for p in path:
+        if isinstance(cur, dict) and p in cur:
+            cur = cur[p]
+        else:
+            return None
+    return cur
+
+def extract_list_from_search_resp(resp: dict):
+    if not isinstance(resp, dict):
+        return []
+    for path in SEARCH_LIST_PATHS:
+        lst = get_by_path(resp, path)
+        if isinstance(lst, list):
+            return lst
+    return []
+
+def parse_search_item(raw: dict) -> dict:
+    item = {}
+    item["itemCd"] = str(pick_first(raw, SEARCH_ID_KEYS) or "").strip()
+    item["itemName"] = pick_first(raw, SEARCH_NAME_KEYS) or ""
+    item["imageUrlMobile"] = normalize_img_url(pick_first(raw, SEARCH_IMG_KEYS) or "")
+    item["categoryDepthName2"] = pick_first(raw, SEARCH_CAT2_KEYS) or ""
+    item["categoryDepthName3"] = pick_first(raw, SEARCH_CAT3_KEYS) or ""
+    item["webViewUrl"] = normalize_product_url(raw.get("webViewUrl") or raw.get("detailUrl") or "")
+    return item
+
+def is_dress(name: str, c2: str, c3: str) -> bool:
+    hay = " ".join([name or "", c2 or "", c3 or ""]).upper()
+    return any(term in hay for term in DRESS_TERMS)
+
+def make_search_payload(keyword: str, page_no: int, page_size: int) -> dict:
+    return {
+        "custNo": "",
+        "gender": "all",        # 결과는 all로 받되, 후처리로 여성/상의(+원피스)만 채택
+        "keyword": keyword,
+        "sort": "WCK",
+        "pageNo": page_no,
+        "pageSize": page_size,
+        "bcds": [],
+        "colors": [],
+        "benefits": [],
+        "discounts": [],
+        "device": "PC",
+        "lcds": [],
+        "searchType": "recent",
+        "source": "Rn/Women",   # DevTools값 유지
+        "status": ["01"],
+    }
+
+def fetch_search_page_v2(keyword: str, page_no: int, page_size: int = 60) -> Optional[dict]:
+    payload = make_search_payload(keyword, page_no, page_size)
+    headers = make_headers()
+    try:
+        r = SESSION.post(SEARCH_ENDPOINT_V2, headers=headers, data=json.dumps(payload), timeout=20)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            print(f"[search v2 http {r.status_code}] {SEARCH_ENDPOINT_V2}")
+            return None
+    except Exception as e:
+        print("[search v2 fetch error]", e)
+        return None
+
+def iterate_search_v2(keyword: str, max_pages: int = 8, page_size: int = 60) -> List[dict]:
+    out = []
+    for p in range(1, max_pages + 1):
+        polite_sleep()
+        resp = fetch_search_page_v2(keyword, p, page_size)
+        if not resp:
+            if p == 1:
+                print(f"[search v2] '{keyword}' p{p} 응답 없음 → 중단")
+            break
+        items = extract_list_from_search_resp(resp)
+        if not items:
+            top = list(resp.keys()) if isinstance(resp, dict) else type(resp)
+            data_keys = list((resp.get("data") or {}).keys()) if isinstance(resp, dict) and isinstance(resp.get("data"), dict) else None
+            print(f"[search v2] '{keyword}' p{p} 리스트 비어있음 → 중단 (top={top}, data_keys={data_keys})")
+            break
+        print(f"[search v2] '{keyword}' p{p} → {len(items)} items")
+        out.extend(items)
+    return out
+
+# ─────────────────────────────────────────────────────────
+# 공통 저장 파이프라인
+def try_save_item(item: dict,
+                  detected: Optional[str],
+                  known_ids: set,
+                  known_hashes: List[Tuple[str,str,str]],
+                  saved: Dict[str,int],
+                  stats: SkipStats,
+                  labels_filter=None) -> bool:
+    """
+    item: 카테고리/검색 공용 구조 (itemCd, itemName, categoryDepthName2/3, imageUrlMobile, webViewUrl)
+    detected: 라벨 감지 결과(없으면 None)
+    """
+    itemCd = str(item.get("itemCd") or "").strip()
+    if not itemCd:
+        stats.add("no_id"); return False
+    name = (item.get("itemName") or "").strip()
+
+    detail_url = normalize_product_url(item.get("webViewUrl") or "")
+    if not detail_url or not robots_allowed(detail_url):
+        stats.add("robots_block"); return False
+
+    # 갤러리 이미지 후보 수집 (카테고리 모드에서만 detail_html fetch 하던걸 공용화)
+    gallery_urls = []
+    try:
+        res = SESSION.get(detail_url, headers=HEADERS, timeout=20)
+        if res.status_code == 200 and res.text:
+            gallery_urls = extract_gallery_images(res.text)
+    except Exception:
+        pass
+
+    # 이미지 후보
+    first_img = normalize_img_url(item.get("imageUrlMobile") or "")
+    candidate_img_urls = ([first_img] if first_img else []) + gallery_urls
+    candidate_img_urls = [u for u in candidate_img_urls if u]
+
+    raw = None
+    picked_url = None
+    for u in candidate_img_urls:
+        raw_try = fetch_image_bytes(u)
+        if not raw_try:
+            continue
+
+        # 미결이면 polka-dot 비전 감지
+        if not detected:
+            try:
+                npimg = np.frombuffer(raw_try, dtype=np.uint8)
+                img_bgr = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
+                if img_bgr is not None and (looks_polkadot(img_bgr) or looks_polkadot_blob(img_bgr)):
+                    detected = "polka_dot"
+            except Exception:
+                pass
+
+        # 파일명 힌트 백업
+        if not detected:
+            fn_hint = u.split("/")[-1].lower()
+            if any(w in fn_hint for w in ["polka-dot","polka_dot","polkadot","polka dot","_dot","-dot"," dot "]):
+                detected = "polka_dot"
+            elif any(w in fn_hint for w in ["floral","flower","bouquet","ditsy","botanic","botanical","rose","daisy","tulip","liberty"]):
+                detected = "floral"
+
+        if detected:
+            raw = raw_try
+            picked_url = u
+            break
+
+    if not detected:
+        stats.add("no_pattern"); return False
+    if labels_filter and detected not in labels_filter:
+        stats.add("label_filter"); return False
+    if not raw:
+        stats.add("img_fetch_fail"); return False
+
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        stats.add("img_open_fail"); return False
+    if not ensure_min_side(img, MIN_SIDE):
+        stats.add("too_small"); return False
+
+    phx = imagehash.phash(img).__str__() if USE_PHASH else None
+    if phx and any(bin(int(phx,16)^int(hx,16)).count("1") <= PHASH_THRESHOLD for hx,_,_ in known_hashes):
+        stats.add("phash_dup"); return False
+
+    out_dir = SAVE_ROOT / detected
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"wconcept_{itemCd}.jpg"
+    out_path = out_dir / fname
+    with open(out_path, "wb") as f:
+        f.write(raw)
+
+    append_manifest(MANIFEST, {
+        "site": SITE,
+        "product_id": itemCd,
+        "label": detected,
+        "title": name,
+        "url": detail_url,
+        "img_url": picked_url or first_img,
+        "file_path": str(out_path.as_posix()),
+        "width": img.size[0], "height": img.size[1],
+        "phash_hex": phx or "",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
+
+    if phx:
+        known_hashes.append((phx, detected, str(out_path)))
+    saved[detected] = saved.get(detected, 0) + 1
+    print(f"  ✔ {SITE} | {detected} | {name[:60]}... → {fname} ({saved[detected]})")
+    return True
+
+# ─────────────────────────────────────────────────────────
+# 메인 수집 (복합)
+def collect_api(per_label_target=20,
+                labels_filter=None,
+                max_pages=10,                 # 카테고리 탐색 범위
+                search_pages=8,               # 검색 탐색 범위
+                use_category_for=("solid","stripe","plaid"),  # 카테고리 기반 라벨
+                use_search_for=("floral","polka_dot"),        # 검색 기반 라벨
+                search_config: Dict[str,Dict]=SEARCH_CONFIG):
+
     known_ids, known_hashes = load_manifest(MANIFEST)
     print(f"[{SITE}] manifest ids={len(known_ids)}, phash={len(known_hashes)}")
 
     saved = {lb: 0 for lb in LABELS}
-    seen = set()
+    seen = set(known_ids)  # 중복 방지
     stats = SkipStats()
 
-    for cat_name, cat_id, sub1, sub2 in CATEGORIES:
-        base_url = build_url(cat_id, sub1, sub2)
-        print(f"[use] endpoint={base_url} ({cat_name})")
+    # 1) 카테고리 API 순회 (요청 라벨만 수집)
+    if use_category_for:
+        for cat_name, cat_id, sub1, sub2 in CATEGORIES:
+            base_url = build_url(cat_id, sub1, sub2)
+            print(f"[use] endpoint={base_url} ({cat_name})")
 
-        contents_all: List[dict] = []
-        for sort_mode in SORT_MODES:
-            contents = iterate_category_random(base_url, max_pages=max_pages, page_size=60, sort_mode=sort_mode)
-            contents_all.extend(contents)
-            # 조기 종료(원하면 삭제/조정)
-            if sum(saved.values()) >= 3 * per_label_target:
-                break
-
-        if not contents_all:
-            continue
-
-        for item in contents_all:
-            if all(saved[lb] >= per_label_target for lb in LABELS):
-                break
-
-            itemCd = str(item.get("itemCd") or "").strip()
-            if not itemCd:
-                stats.add("no_id"); continue
-            if itemCd in seen:
-                stats.add("dup_id"); continue
-            seen.add(itemCd)
-
-            name = (item.get("itemName") or "").strip()
-            cat2 = item.get("categoryDepthName2") or ""
-            cat3 = item.get("categoryDepthName3") or ""
-            if not (is_tops_by_category(cat2, cat3) or any(t in name for t in TOPS_TERMS)):
-                stats.add("not_tops"); continue
-            if not is_apparel(name):
-                stats.add("not_apparel"); continue
-
-            detail_url = normalize_product_url(item.get("webViewUrl"))
-            if not detail_url:
-                stats.add("no_url"); continue
-            if not robots_allowed(detail_url):
-                stats.add("robots_block"); continue
-
-            # 본문 텍스트 보조
-            detail_text = fetch_detail_text(detail_url)
-            detected = detect_label_from_texts(name, detail_text)
-
-            # 파일명/URL 힌트
-            if not detected:
-                detected = hint_label_from_media(item)
-
-            # 갤러리 이미지 후보 수집
-            gallery_urls = []
-            try:
-                res = requests.get(detail_url, headers=HEADERS, timeout=20)
-                if res.status_code == 200 and res.text:
-                    gallery_urls = extract_gallery_images(res.text)
-            except Exception:
-                pass
-
-            # 이미지 다운로드 & 시각 판단
-            candidate_img_urls = [item.get("imageUrlMobile") or ""] + gallery_urls
-            candidate_img_urls = [u for u in candidate_img_urls if u]
-
-            raw = None
-            picked_url = None
-            for u in candidate_img_urls:
-                raw_try = fetch_image_bytes(u)
-                if not raw_try:
-                    continue
-
-                # 아직 미결이면 polka-dot 비전 감지
-                if not detected:
-                    try:
-                        npimg = np.frombuffer(raw_try, dtype=np.uint8)
-                        img_bgr = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
-                        if img_bgr is not None and (looks_polkadot(img_bgr) or looks_polkadot_blob(img_bgr)):
-                            detected = "polka_dot"
-                    except Exception:
-                        pass
-
-                # 파일명으로 polka/floral 힌트 백업
-                if not detected:
-                    fn_hint = u.split("/")[-1].lower()
-                    if any(w in fn_hint for w in ["polka-dot","polka_dot","polkadot","polka dot","_dot","-dot"," dot "]):
-                        detected = "polka_dot"
-                    elif any(w in fn_hint for w in ["floral","flower","bouquet","ditsy","botanic","botanical","rose","daisy","tulip","liberty"]):
-                        detected = "floral"
-
-                if detected:
-                    raw = raw_try
-                    picked_url = u
+            contents_all: List[dict] = []
+            for sort_mode in SORT_MODES:
+                contents = iterate_category_random(base_url, max_pages=max_pages, page_size=60, sort_mode=sort_mode)
+                contents_all.extend(contents)
+                if sum(saved.values()) >= 3 * per_label_target:
                     break
 
-            if not detected:
-                stats.add("no_pattern"); continue
-            if labels_filter and detected not in labels_filter:
-                stats.add("label_filter"); continue
-            if saved[detected] >= per_label_target:
-                stats.add("label_full"); continue
-            if not raw:
-                stats.add("img_fetch_fail"); continue
+            for item in contents_all:
+                if all(saved.get(lb,0) >= per_label_target for lb in use_category_for):
+                    break
 
-            img_url = picked_url or (item.get("imageUrlMobile") or "")
+                itemCd = str(item.get("itemCd") or "").strip()
+                if not itemCd or itemCd in seen:
+                    continue
+                seen.add(itemCd)
 
-            try:
-                img = Image.open(io.BytesIO(raw)).convert("RGB")
-            except Exception:
-                stats.add("img_open_fail"); continue
-            if not ensure_min_side(img, MIN_SIDE):
-                stats.add("too_small"); continue
+                name = (item.get("itemName") or "").strip()
+                cat2 = item.get("categoryDepthName2") or ""
+                cat3 = item.get("categoryDepthName3") or ""
+                if not (is_tops_by_category(cat2, cat3) or any(t in name for t in TOPS_TERMS)):
+                    stats.add("not_tops"); continue
+                if not is_apparel(name):
+                    stats.add("not_apparel"); continue
 
-            phx = imagehash.phash(img).__str__() if USE_PHASH else None
-            if phx and any(bin(int(phx,16)^int(hx,16)).count("1") <= PHASH_THRESHOLD for hx,_,_ in known_hashes):
-                stats.add("phash_dup"); continue
+                detail_url = normalize_product_url(item.get("webViewUrl"))
+                if not detail_url or not robots_allowed(detail_url):
+                    stats.add("robots_block"); continue
 
-            out_dir = SAVE_ROOT / detected
-            out_dir.mkdir(parents=True, exist_ok=True)
-            fname = f"wconcept_{itemCd}.jpg"
-            out_path = out_dir / fname
-            with open(out_path, "wb") as f:
-                f.write(raw)
+                detail_text = fetch_detail_text(detail_url)
+                detected = detect_label_from_texts(name, detail_text) or hint_label_from_media(item)
 
-            append_manifest(MANIFEST, {
-                "site": SITE,
-                "product_id": itemCd,
-                "label": detected,
-                "title": name,
-                "url": detail_url,
-                "img_url": img_url,
-                "file_path": str(out_path.as_posix()),
-                "width": img.size[0], "height": img.size[1],
-                "phash_hex": phx or "",
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            })
+                if not detected or detected not in use_category_for:
+                    stats.add("cat_label_skip"); continue
+                if saved.get(detected,0) >= per_label_target:
+                    stats.add("label_full"); continue
 
-            if phx:
-                known_hashes.append((phx, detected, str(out_path)))
-            saved[detected] += 1
-            print(f"  ✔ {SITE} | {detected} | {name[:60]}... → {fname} ({saved[detected]}/{per_label_target})")
+                # 저장
+                try_save_item(item, detected, known_ids, known_hashes, saved, stats, labels_filter)
 
-    print("\n[done] W컨셉(API) 수집 완료. 저장:", SAVE_ROOT.as_posix())
+    # 2) 검색 v2 모드 (라벨별 설정 기반 복합 수집)
+    for label in use_search_for:
+        cfg = search_config.get(label, {})
+        kws = cfg.get("keywords", [])
+        target_gender = cfg.get("gender", "all").lower()
+        allow_dress = bool(cfg.get("allow_dress", False))
+        if not kws:
+            continue
+
+        print(f"\n[search v2 mode] label={label} gender={target_gender} allow_dress={allow_dress} → keywords={kws}")
+        for kw in kws:
+            if saved.get(label,0) >= per_label_target:
+                break
+
+            raw_items = iterate_search_v2(kw, max_pages=search_pages, page_size=60)
+            if not raw_items:
+                continue
+
+            for raw_it in raw_items:
+                if saved.get(label,0) >= per_label_target:
+                    break
+
+                item = parse_search_item(raw_it)
+                itemCd = item["itemCd"]
+                if not itemCd or itemCd in seen:
+                    continue
+                seen.add(itemCd)
+
+                name = (item["itemName"] or "").strip()
+                c2 = item.get("categoryDepthName2") or ""
+                c3 = item.get("categoryDepthName3") or ""
+
+                # 성별 후처리: women 전용이면 남성으로 추정되는 항목 컷
+                if target_gender == "women" and looks_mens(name, c2, c3):
+                    stats.add("search_mens_cut"); continue
+
+                # 상의 OK 또는 (해당 라벨만) 원피스 허용
+                tops_ok = is_tops_by_category(c2, c3) or any(t in name for t in TOPS_TERMS)
+                dress_ok = allow_dress and is_dress(name, c2, c3)
+                if not (tops_ok or dress_ok):
+                    stats.add("search_not_tops_dress"); continue
+                if not is_apparel(name):
+                    stats.add("search_not_apparel"); continue
+
+                # 라벨 결정: 제목/미디어 힌트 우선, 없으면 검색 라벨로 귀속
+                detected = detect_label_from_title(name) or hint_label_from_media(item) or label
+
+                if detected != label:
+                    # 검색 키워드가 잡았지만 다른 패턴이라면, 원하면 스킵/허용 선택 가능
+                    # 지금은 '검색 라벨'로 귀속되도록 했음. 필요시 아래 주석 해제해서 강제 동일성만 허용 가능.
+                    # stats.add("search_label_mismatch"); continue
+                    pass
+
+                if labels_filter and detected not in labels_filter:
+                    stats.add("search_label_filter"); continue
+                if saved.get(detected, 0) >= per_label_target:
+                    stats.add("search_label_full"); continue
+
+                # 저장
+                try_save_item(item, detected, known_ids, known_hashes, saved, stats, labels_filter)
+
+    print("\n[done] 카테고리 + 검색(v2) 복합 수집 완료. 저장:", SAVE_ROOT.as_posix())
     print("       manifest:", MANIFEST.as_posix())
     print("       per-label:", saved)
     stats.dump()
 
 if __name__ == "__main__":
-    # 먼저 소량으로 검증 → OK면 per_label_target / max_pages 늘리기
-    collect_api(per_label_target=20, labels_filter=None, max_pages=30)
+    # 먼저 소량으로 검증 → OK면 per_label_target / max_pages / search_pages 늘리기
+    collect_api(
+        per_label_target=20,
+        labels_filter=None,
+        max_pages=30,                         # 카테고리 탐색 범위
+        search_pages=10,                      # 검색 탐색 범위
+        use_category_for=("solid","stripe","plaid"),
+        use_search_for=("floral","polka_dot"),# 여성전용 + 원피스 허용
+        search_config=SEARCH_CONFIG
+    )
