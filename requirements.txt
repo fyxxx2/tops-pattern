@@ -9,3 +9,4 @@ scikit-learn
 opencv-python
 scikit-image
 joblib
+label-studio
