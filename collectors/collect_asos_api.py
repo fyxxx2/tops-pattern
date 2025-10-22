@@ -1,9 +1,9 @@
 # collectors/collect_asos_api.py
-# ASOS 검색 JSON API 전용 크롤러 (여성군 + floral/polka_dot, 카테고리 제한 해제, 대량 수집)
+# ASOS 검색 JSON API 전용 크롤러 (여성군 + floral/polka_dot, 탑/드레스만 저장)
 # 저장: data/raw/tops/<label>/asos_<productId>.jpg
 # manifest: data/raw/tops/_manifest_asos.csv
 
-import io, time, json, random
+import io, time, random, argparse
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -14,7 +14,7 @@ from PIL import Image
 import imagehash
 
 # ─────────────────────────────────────────────────────────
-# 프로젝트 공용 유틸(있으면 사용; 없으면 아래 대체 사용)
+# 공용 유틸(있으면 사용, 없으면 안전 폴백)
 try:
     from crawler_utils import (
         SAVE_ROOT, ensure_min_side, load_manifest, append_manifest,
@@ -62,7 +62,7 @@ MANIFEST = SAVE_ROOT / "_manifest_asos.csv"
 # 여성군 강제 — attribute_1047:6132 = Women
 WOMEN_REFINE = "attribute_1047:6132"
 
-LABELS = ["polka_dot","floral"]
+LABELS = ["polka_dot", "floral"]
 SEARCH_KEYWORDS = {
     "polka_dot": [
         "polka dot", "polkadot", "polka-dot", "dot print", "spot print", "spotted", "micro dot", "mini dot"
@@ -75,8 +75,23 @@ SEARCH_KEYWORDS = {
 
 ASOS_SEARCH_ENDPOINT = "https://www.asos.com/api/product/search/v2/"
 
-# ASOS 전용 이미지 최소 변 기준(완화)
+# ASOS 전용 이미지 최소 변(ASOS는 가끔 작은 썸네일도 줌)
 ASOS_MIN_SIDE = 256
+
+# ─────────────────────────────────────────────────────────
+# 탑/드레스만 저장을 위한 키워드 & 헬퍼
+TOPS_KEYWORDS = [
+    "top","tee","t-shirt","shirt","blouse","knit","sweater","cardigan",
+    "pullover","hoodie","sweatshirt","vest","crop top","camisole","cami","tank",
+    "셔츠","티셔츠","블라우스","니트","스웨터","가디건","맨투맨","후드","탑","조끼"
+]
+DRESS_KEYWORDS = [
+    "dress","one piece","one-piece","onepiece","slip dress","maxi dress","midi dress","mini dress",
+    "원피스","드레스"
+]
+def is_tops_or_dress(name: str, category_path: str = "") -> bool:
+    blob = f"{name or ''} {category_path or ''}".lower()
+    return any(k in blob for k in TOPS_KEYWORDS) or any(k in blob for k in DRESS_KEYWORDS)
 
 # ─────────────────────────────────────────────────────────
 def make_headers() -> Dict[str,str]:
@@ -197,14 +212,14 @@ class SkipStats:
 # ─────────────────────────────────────────────────────────
 def collect_asos_search(per_label_target=300, max_pages=60):
     """
-    per_label_target: 라벨별 저장 목표 수 (디폴트 300)
-    max_pages: 키워드별 최대 페이지 수 (72 * max_pages 아이템 조회)
+    per_label_target: 라벨별 저장 목표 수
+    max_pages: 키워드별 최대 페이지 수 (limit=72 기준)
     """
     known_ids, known_hashes = load_manifest(MANIFEST)
     print(f"[{SITE}] manifest ids={len(known_ids)}, phash={len(known_hashes)}")
 
     saved = {lb: 0 for lb in LABELS}
-    seen: set = set()
+    seen: set = set(known_ids)  # 기존과 중복 방지
     stats = SkipStats()
 
     for label in LABELS:
@@ -248,11 +263,16 @@ def collect_asos_search(per_label_target=300, max_pages=60):
                     pid = str(p.get("id") or "").strip()
                     if not pid:
                         stats.add("no_id"); continue
-                    if pid in seen or pid in known_ids:
+                    if pid in seen:
                         stats.add("dup_id"); continue
                     seen.add(pid)
 
                     name = (p.get("name") or "").strip()
+                    url_path = p.get("url") or ""
+
+                    # ★ 탑/드레스만 저장 (여성 필터는 DEFAULT_PARAMS에 이미 반영)
+                    if not is_tops_or_dress(name, url_path):
+                        stats.add("not_tops_nor_dress"); continue
 
                     # 이미지
                     img_url = select_best_image(p)
@@ -302,9 +322,9 @@ def collect_asos_search(per_label_target=300, max_pages=60):
                     saved[label] += 1
                     print(f"   ✔ {SITE} | {label} | {name[:60]}... → {fname} ({saved[label]}/{per_label_target})")
 
-                    time.sleep(0.12)  # 이미지 요청 간격(약간의 완화)
+                    time.sleep(0.12)  # 이미지 요청 간격
 
-                # **종료 조건**: 마지막 페이지는 limit보다 적게 오면 끝
+                # 종료 조건: 마지막 페이지는 limit보다 적게 오면 끝
                 if len(products) < params["limit"]:
                     break
 
@@ -318,5 +338,11 @@ def collect_asos_search(per_label_target=300, max_pages=60):
     print("       per-label:", saved)
     stats.dump()
 
+# ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    collect_asos_search(per_label_target=300, max_pages=60) #300개를 60페이지에서 추출
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--per-label", type=int, default=300, help="라벨별 목표 수")
+    ap.add_argument("--pages", type=int, default=60, help="키워드별 최대 페이지 수")
+    args = ap.parse_args()
+
+    collect_asos_search(per_label_target=args.per_label, max_pages=args.pages)
