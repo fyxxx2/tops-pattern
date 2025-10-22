@@ -319,5 +319,4 @@ def collect_asos_search(per_label_target=300, max_pages=60):
     stats.dump()
 
 if __name__ == "__main__":
-    # 더 크게 긁고 싶으면 per_label_target / max_pages 늘리면 됨
-    collect_asos_search(per_label_target=300, max_pages=60)
+    collect_asos_search(per_label_target=300, max_pages=60) #300개를 60페이지에서 추출
