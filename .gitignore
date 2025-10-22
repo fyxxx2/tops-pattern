@@ -1,0 +1,39 @@
+# ────────────────
+# Python
+# ────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# ────────────────
+# Virtual Environment
+# ────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ────────────────
+# OS / Editor
+# ────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ────────────────
+# Manifest & Logs
+# ────────────────
+*_manifest*.csv
+*.log
+
+# ────────────────
+# Environment / Secrets
+# ────────────────
+.env
+*.env
