@@ -8,6 +8,8 @@
 # 저장: data/raw/tops/<label>/wconcept_<itemCd>.jpg
 # manifest: data/raw/tops/_manifest_wconcept.csv
 
+
+import argparse
 import io, time, json, re, random, argparse
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
@@ -847,21 +849,34 @@ def collect_api(per_label_target=20,
     print("       per-label:", saved)
     stats.dump()
 
+    
+
 # ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--per-label", type=int, default=20, help="라벨별 목표 수")
-    ap.add_argument("--cat-pages", type=int, default=30, help="카테고리 탐색 페이지")
-    ap.add_argument("--search-pages", type=int, default=10, help="검색 탐색 페이지")
-    ap.add_argument("--no-category", action="store_true", help="카테고리 수집 비활성화")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--per-label", type=int, default=400,
+                        help="라벨별 목표 수 (solid/stripe/plaid)")
+    parser.add_argument("--max-pages", type=int, default=30,
+                        help="카테고리 탐색 최대 페이지(무작위 샘플링)")
+    parser.add_argument("--labels", type=str, default="solid,stripe,plaid",
+                        help="수집 라벨 콤마구분 (예: solid,stripe,plaid)")
+    parser.add_argument("--enable-search", action="store_true",
+                        help="검색(v2)도 사용 (기본은 끔)")
+    parser.add_argument("--search-pages", type=int, default=8,
+                        help="검색(v2) 탐색 최대 페이지")
+    args = parser.parse_args()
+
+    want_labels = tuple([s.strip() for s in args.labels.split(",") if s.strip()])
+    # 기본: 카테고리로만 수집
+    use_category_for = tuple(l for l in want_labels if l in ("solid","stripe","plaid"))
+    use_search_for   = ("floral","polka_dot") if args.enable_search else tuple()
 
     collect_api(
         per_label_target=args.per_label,
-        labels_filter=None,
-        max_pages=args.cat_pages,
+        labels_filter=want_labels,           # ← 지정 라벨만 저장
+        max_pages=args.max_pages,
         search_pages=args.search_pages,
-        use_category_for=() if args.no_category else ("solid","stripe","plaid"),
-        use_search_for=("floral","polka_dot"),
+        use_category_for=use_category_for,   # ← 카테고리 모드에서 이 라벨만
+        use_search_for=use_search_for,       # ← 기본 비활성(옵션으로 켤 수 있음)
         search_config=SEARCH_CONFIG
     )
