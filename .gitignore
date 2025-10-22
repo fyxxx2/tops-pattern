@@ -1,39 +1,5 @@
-# ────────────────
-# Python
-# ────────────────
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.so
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# ────────────────
-# Virtual Environment
-# ────────────────
+# 가상환경
 .venv/
-venv/
-env/
-ENV/
 
-# ────────────────
-# OS / Editor
-# ────────────────
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# ────────────────
-# Manifest & Logs
-# ────────────────
-*_manifest*.csv
-*.log
-
-# ────────────────
-# Environment / Secrets
-# ────────────────
+# 환경변수 파일
 .env
-*.env
