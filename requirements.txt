@@ -1,0 +1,12 @@
+requests
+beautifulsoup4
+lxml
+pillow
+imagehash
+python-dotenv
+pandas
+scikit-learn
+opencv-python
+scikit-image
+joblib
+label-studio
