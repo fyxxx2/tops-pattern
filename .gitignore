@@ -1,5 +1,14 @@
 # 가상환경
 .venv/
+venv/
 
 # 환경변수 파일
 .env
+.env.*
+
+# Cache and system files
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db

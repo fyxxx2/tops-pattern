@@ -5,8 +5,12 @@ pillow
 imagehash
 python-dotenv
 pandas
+numpy
 scikit-learn
 opencv-python
 scikit-image
 joblib
 label-studio
+matplotlib
+tensorflow
+tqdm
