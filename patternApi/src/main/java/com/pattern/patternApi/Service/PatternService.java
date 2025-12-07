@@ -1,45 +1,54 @@
 package com.pattern.patternApi.Service;
 
-import org.springframework.http.*;
-import org.springframework.http.client.MultipartBodyBuilder;
+import com.pattern.patternApi.Dto.PatternResponse;
+import lombok.RequiredArgsConstructor;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.multipart.MultipartFile;
-
-import java.io.IOException;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.http.*;
+import java.util.HashMap;
 import java.util.Map;
 
 @Service
+@RequiredArgsConstructor
 public class PatternService {
 
     private final RestTemplate restTemplate = new RestTemplate();
-    private final String FASTAPI_URL = "http://localhost:8000/predict";
 
-    public Map<String, Object> predict(MultipartFile file) {
+    public PatternResponse predictPattern(MultipartFile file) {
 
         try {
+            String fastApiUrl = "http://127.0.0.1:8000/predict";
+
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 
-            // 이미지 파일을 FastAPI로 전송
-            MultipartBodyBuilder builder = new MultipartBodyBuilder();
-            builder.part("file", file.getBytes())
-                    .header("Content-Disposition",
-                            "form-data; name=file; filename=" + file.getOriginalFilename());
+            // 파일을 보낼 form-data 구성
+            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+            body.add("file", new ByteArrayResource(file.getBytes()) {
+                @Override
+                public String getFilename() {
+                    return file.getOriginalFilename();
+                }
+            });
 
-            HttpEntity<?> request = new HttpEntity<>(builder.build(), headers);
+            HttpEntity<MultiValueMap<String, Object>> request = new HttpEntity<>(body, headers);
 
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    FASTAPI_URL,
-                    HttpMethod.POST,
-                    request,
-                    Map.class
+            ResponseEntity<Map> response = restTemplate.postForEntity(fastApiUrl, request, Map.class);
+
+            // FastAPI가 반환한 값
+            Map responseBody = response.getBody();
+
+            return new PatternResponse(
+                    (String) responseBody.get("prediction"),
+                    (Double) responseBody.get("confidence")
             );
 
-            return response.getBody();
-
-        } catch (IOException e) {
-            throw new RuntimeException("이미지 처리 중 오류 발생", e);
+        } catch (Exception e) {
+            return new PatternResponse("error", 0.0);
         }
     }
 }

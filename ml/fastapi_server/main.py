@@ -5,7 +5,7 @@ import numpy as np
 from utils import load_and_preprocess_image
 import os
 
-MODEL_PATH = "C:/Users/rlarh/Desktop/tops-pattern/ml/models/efficientnet_fullimage.keras"
+MODEL_PATH = "C:/Users/PC/Desktop/tops-pattern/ml/models/efficientnet_fullimage.keras" #데스크탑 노트북 구별 잘하기
 
 print(" 모델 로딩 중…")
 model = tf.keras.models.load_model(MODEL_PATH)
