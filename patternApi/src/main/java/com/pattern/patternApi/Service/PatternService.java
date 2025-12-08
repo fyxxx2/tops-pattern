@@ -9,7 +9,6 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.http.*;
-import java.util.HashMap;
 import java.util.Map;
 
 @Service
@@ -26,7 +25,7 @@ public class PatternService {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 
-            // 파일을 보낼 form-data 구성
+            // 파일 form-data 구성
             MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
             body.add("file", new ByteArrayResource(file.getBytes()) {
                 @Override
@@ -37,17 +36,21 @@ public class PatternService {
 
             HttpEntity<MultiValueMap<String, Object>> request = new HttpEntity<>(body, headers);
 
-            ResponseEntity<Map> response = restTemplate.postForEntity(fastApiUrl, request, Map.class);
+            ResponseEntity<Map> response =
+                    restTemplate.postForEntity(fastApiUrl, request, Map.class);
 
-            // FastAPI가 반환한 값
             Map responseBody = response.getBody();
 
-            return new PatternResponse(
-                    (String) responseBody.get("prediction"),
-                    (Double) responseBody.get("confidence")
-            );
+            String prediction = (String) responseBody.get("prediction");
+
+            // confidence는 Float 또는 Double일 수 있으므로 Number로 먼저 받음
+            Number confidenceNum = (Number) responseBody.get("confidence");
+            double confidence = confidenceNum.doubleValue();
+
+            return new PatternResponse(prediction, confidence);
 
         } catch (Exception e) {
+            e.printStackTrace();  // 문제 추적 용이하게 출력
             return new PatternResponse("error", 0.0);
         }
     }

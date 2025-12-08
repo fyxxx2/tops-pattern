@@ -41,8 +41,8 @@ def predict_image(path):
     label = CLASS_NAMES[pred_index]
 
     print("\n==============================")
-    print(f"📌 예측 결과: {label}")
-    print(f"📌 Confidence: {confidence:.4f}")
+    print(f"예측 결과: {label}")
+    print(f"Confidence: {confidence:.4f}")
     print("==============================\n")
 
     return label, confidence

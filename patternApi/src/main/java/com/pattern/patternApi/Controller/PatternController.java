@@ -10,6 +10,7 @@ import org.springframework.web.multipart.MultipartFile;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/pattern")
+@CrossOrigin(origins = "http://localhost:3000") // react허용
 public class PatternController {
 
     private final PatternService patternService;
